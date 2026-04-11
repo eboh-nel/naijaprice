@@ -1,0 +1,130 @@
+from sqlalchemy.orm import Session
+from app.models import Product, ProductVariant, Listing, Category, MatchReviewQueue
+from app.services.normalization import normalize_product
+from app.utils.text import build_variant_key
+from difflib import SequenceMatcher
+import re
+
+CONFIDENCE_THRESHOLD = 0.75
+
+
+def match_and_save(db: Session, raw: dict, store_id: int, listing: Listing):
+    """
+    Given raw scraped data, try to match it to an existing product variant.
+    If confident → link directly.
+    If uncertain → push to manual review queue.
+    """
+    normalized = normalize_product(raw)
+    variant_key = normalized.get("variant_key")
+
+    if not variant_key:
+        _queue_for_review(db, listing, None, 0.0)
+        return
+
+    # Step 1: Exact variant key match
+    existing = db.query(ProductVariant).filter(
+        ProductVariant.variant_key == variant_key
+    ).first()
+
+    if existing:
+        listing.product_variant_id = existing.id
+        db.commit()
+        return
+
+    # Step 2: Fuzzy match on normalized names
+    brand = normalized.get("brand")
+    model = normalized.get("model")
+
+    if not brand or not model:
+        _queue_for_review(db, listing, None, 0.0)
+        return
+
+    candidates = (
+        db.query(ProductVariant)
+        .join(Product)
+        .filter(Product.brand.ilike(f"%{brand}%"))
+        .all()
+    )
+
+    best_score = 0.0
+    best_match = None
+    for candidate in candidates:
+        score = SequenceMatcher(
+            None, variant_key.lower(), candidate.variant_key.lower()
+        ).ratio()
+        if score > best_score:
+            best_score = score
+            best_match = candidate
+
+    if best_score >= CONFIDENCE_THRESHOLD and best_match:
+        listing.product_variant_id = best_match.id
+        db.commit()
+    else:
+        # Step 3: Create new product and variant
+        new_variant = _create_new_product_variant(db, normalized)
+        if new_variant:
+            listing.product_variant_id = new_variant.id
+            db.commit()
+        else:
+            _queue_for_review(db, listing, best_match, best_score)
+
+
+def _create_new_product_variant(db: Session, normalized: dict) -> ProductVariant | None:
+    import re, unicodedata
+
+    brand = normalized.get("brand")
+    model = normalized.get("model")
+    if not brand or not model:
+        return None
+
+    normalized_name = f"{brand} {model}".lower()
+    slug = re.sub(r"[^\w\-]", "-", normalized_name).strip("-")
+
+    product = db.query(Product).filter(
+        Product.brand.ilike(brand),
+        Product.model.ilike(model),
+    ).first()
+
+    if not product:
+        category = db.query(Category).filter(Category.slug == "uncategorized").first()
+        product = Product(
+            brand=brand,
+            model=model,
+            normalized_name=normalized_name,
+            slug=_unique_slug(db, slug),
+            category_id=category.id if category else None,
+        )
+        db.add(product)
+        db.flush()
+
+    variant_key = normalized.get("variant_key")
+    variant = ProductVariant(
+        product_id=product.id,
+        color=normalized.get("color"),
+        storage=normalized.get("storage"),
+        ram=normalized.get("ram"),
+        size=normalized.get("size"),
+        variant_key=variant_key,
+    )
+    db.add(variant)
+    db.flush()
+    return variant
+
+
+def _queue_for_review(db: Session, listing: Listing, suggested_variant, score: float):
+    item = MatchReviewQueue(
+        listing_id=listing.id,
+        suggested_variant_id=suggested_variant.id if suggested_variant else None,
+        confidence_score=score,
+    )
+    db.add(item)
+    db.commit()
+
+
+def _unique_slug(db: Session, base_slug: str) -> str:
+    slug = base_slug
+    counter = 1
+    while db.query(Product).filter(Product.slug == slug).first():
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+    return slug
