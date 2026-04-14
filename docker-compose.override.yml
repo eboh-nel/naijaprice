@@ -1,0 +1,28 @@
+# Local development overrides.
+# This file is automatically merged by Docker Compose when you run `docker compose up`.
+# It replaces the production frontend build with a hot-reloading dev server.
+#
+# Usage:
+#   docker compose up          ← uses this override automatically
+#   docker compose -f docker-compose.yml up  ← production mode only
+
+version: "3.9"
+
+services:
+  api:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      DEBUG: "true"
+
+  frontend:
+    build: ~          # skip the production build
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000

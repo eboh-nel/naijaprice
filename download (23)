@@ -1,0 +1,108 @@
+"use client";
+import { useState, useEffect } from "react";
+import { Heart } from "lucide-react";
+
+interface Props {
+  variantId: number;
+}
+
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const EMAIL_KEY = "naijaprice_watchlist_email";
+
+export default function WatchlistButton({ variantId }: Props) {
+  const [saved, setSaved] = useState(false);
+  const [email, setEmail] = useState<string | null>(null);
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [inputEmail, setInputEmail] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(EMAIL_KEY);
+    if (stored) setEmail(stored);
+    // Check if already in watchlist
+    const saved = localStorage.getItem(`wl_${variantId}`);
+    if (saved) setSaved(true);
+  }, [variantId]);
+
+  async function handleClick() {
+    if (saved) {
+      // Unsave - just remove from local storage for now
+      localStorage.removeItem(`wl_${variantId}`);
+      setSaved(false);
+      return;
+    }
+    if (!email) {
+      setShowPrompt(true);
+      return;
+    }
+    await addToWatchlist(email);
+  }
+
+  async function addToWatchlist(userEmail: string) {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/api/user/watchlist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product_variant_id: variantId, email: userEmail }),
+      });
+      if (!res.ok) throw new Error();
+      localStorage.setItem(EMAIL_KEY, userEmail);
+      localStorage.setItem(`wl_${variantId}`, "1");
+      setEmail(userEmail);
+      setSaved(true);
+      setShowPrompt(false);
+    } catch {
+      // silently fail
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={handleClick}
+        disabled={loading}
+        aria-label={saved ? "Remove from watchlist" : "Save to watchlist"}
+        className={`flex items-center gap-1.5 text-xs px-3 py-2 rounded-xl border transition-colors ${
+          saved
+            ? "bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20"
+            : "border-border text-muted hover:border-brand-500 hover:text-brand-500"
+        }`}
+      >
+        <Heart size={13} fill={saved ? "currentColor" : "none"} />
+        {saved ? "Saved" : "Save"}
+      </button>
+
+      {showPrompt && (
+        <div className="absolute top-10 right-0 z-10 w-64 bg-panel border border-border rounded-xl p-3 shadow-xl space-y-2">
+          <p className="text-white text-xs font-semibold">Save to watchlist</p>
+          <input
+            type="email"
+            placeholder="your@email.com"
+            value={inputEmail}
+            onChange={(e) => setInputEmail(e.target.value)}
+            className="w-full bg-surface border border-border rounded px-2.5 py-1.5 text-xs text-white placeholder-muted focus:outline-none focus:border-brand-500"
+            autoFocus
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={() => addToWatchlist(inputEmail)}
+              disabled={!inputEmail}
+              className="flex-1 text-xs py-1.5 bg-brand-500 hover:bg-brand-400 disabled:opacity-50 text-white rounded font-medium transition-colors"
+            >
+              Save
+            </button>
+            <button
+              onClick={() => setShowPrompt(false)}
+              className="flex-1 text-xs py-1.5 border border-border text-muted rounded hover:text-white transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
